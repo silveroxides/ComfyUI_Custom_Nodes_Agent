@@ -1,41 +1,51 @@
-# ComfyUI_Custom_Nodes_Agent
+# ComfyUI Custom Node Development Agents Instructions
 
-Agent files for working with custom nodes inside ComfyUI workspace in VS Code primarily.
+This repository provides a specialized set of instructions and examples designed to guide AI coding agents (such as GitHub Copilot, Continue, or custom IDE agents) in developing, debugging, and documenting custom nodes for ComfyUI.
 
-## Instructions
+## Purpose
 
-### Make a clone of ComfyUI on your drive.
+The primary goal of this repository is to establish a strict operational boundary for AI agents working within a ComfyUI workspace. These instructions:
+- **Enforce Scope:** Prevent agents from modifying ComfyUI core files while allowing full access to the `custom_nodes/` directory.
+- **Provide Context:** Supply agents with the necessary technical knowledge regarding ComfyUI's V1 and V3 APIs, tensor formats, and device management.
+- **Standardize Development:** Ensure that generated code follows PEP 8 standards and ComfyUI-specific best practices.
 
-Optional: Set up the venv as usual.
+## Included Instruction Files
 
-Drop the three files in the top level directory of that ComfyUI clone.
+- [`AGENTS.md`](AGENTS.md): The core rulebook for the agent, defining file system permissions, search strategies, and API requirements.
+- [`python.instructions.md`](python.instructions.md): Python-specific coding standards and style guidelines.
+- [`custom_node.examples.md`](custom_node.examples.md): A comprehensive library of tagged code examples for various ComfyUI operations (V3 API, latent manipulation, hooks, etc.).
 
-Create/Clone your custom node folder/repository inside the custom_node directory.
+## Setup Instructions
 
-### File Structure
+### 1. Prepare your ComfyUI Environment
+Ensure you have a local clone of [ComfyUI](https://github.com/comfyanonymous/ComfyUI).
 
+### 2. Install Instruction Files
+Copy the following files from this repository into the **root directory** of your ComfyUI installation:
+- `AGENTS.md`
+- `python.instructions.md`
+- `custom_node.examples.md`
+
+### 3. File Structure
+Your ComfyUI directory should look like this:
 ```plaintext
 ├─┐ ComfyUI/
-│ └─┐ custom_nodes/
-│   └── your_custom_node/
-│── AGENTS.md
-├── python.instructions.md
-└── custom_nodes.examples.md
+│ ├─┐ custom_nodes/
+│ │ └── your_custom_node_repo/
+│ ├── AGENTS.md
+│ ├── python.instructions.md
+│ └── custom_node.examples.md
+│ └── ... (core ComfyUI files)
 ```
 
-### Open VS Code and select Open Folder.
+### 4. Configure your AI Agent
+1. Open the ComfyUI root folder in VS Code (or your preferred agent-enabled IDE).
+2. Point your agent to these instruction files:
+   - **GitHub Copilot Chat:** Right-click the `AGENTS.md`, `python.instructions.md`, and `custom_node.examples.md` files and select "Add to Chat".
+   - **Continue / Custom Agents:** Add these files to your context or "rules" configuration for the project.
+   - **Specific Mode Agents:** If using an agent that supports system prompts or modes (like Gemini), provide the contents of `AGENTS.md` as the system instruction.
 
-Select the ComfyUI folder to open.
+## Considerations
 
-Open the file tree sidebar
-Right click your custom nodes folder and select "Add Folder to Chat" if using Copilot Chat
-or "Add Files as Context" if using Continue or any equivalent of any other agentic chat.
-
-### Considerations
-
-Not been tested using any of the cli tools but I feel that it should work if you just specify the directory
-of your custom node as the one to edit or if it is the only one there.
-
-### Purpose
-
-The instructions should prevent it from trying to edit ComfyUI core files and only edit your custom node.
+- **Registration Requirement:** Custom nodes are registered at runtime. AI agents cannot verify imports via simple terminal commands; testing must be done by running ComfyUI.
+- **V3 API Preference:** These instructions encourage the use of the modern V3 API (`io.ComfyNode`, `io.Schema`) for all new developments.
