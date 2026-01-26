@@ -2,6 +2,9 @@
 
 This repository provides a specialized set of instructions and examples designed to guide AI coding agents (such as GitHub Copilot, Continue, or custom IDE agents) in developing, debugging, and documenting custom nodes for ComfyUI.
 
+> [!NOTE]
+> **IDE Agnostic:** While these instructions are often used within VS Code, they are not limited to any specific IDE or platform. They can be integrated into any workflow that supports providing system instructions or additional context to an AI agent (e.g., Cursor, Zed, Windsurf, or Claude Code etc.).
+
 ## Purpose
 
 The primary goal of this repository is to establish a strict operational boundary for AI agents working within a ComfyUI workspace. These instructions:
