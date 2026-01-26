@@ -147,9 +147,12 @@ Key standards from that file include:
    - `node_id` — Unique identifier
    - `display_name` — Human-readable name
    - `category` — Node category path
-   - `inputs` — List of `io.*.Input()` definitions
+   - `inputs` — List of `io.*.Input()` definitions. Each `Input()` can take an `advanced=True` parameter to hide it in the UI by default.
    - `outputs` — List of `io.*.Output()` definitions
-3. `execute()` class method implementing node logic
+   - `search_aliases` — List of strings for search optimization (optional)
+   - `description` — Node description for UI tooltips (optional)
+   - `accept_all_inputs` — Boolean; if True, all prompt inputs are passed to `execute` as `kwargs` even if not in schema (optional)
+3. `execute()` class method implementing node logic. Signature should support `**kwargs` for flexibility.
 4. `ComfyExtension` subclass with `get_node_list()` method
 5. `comfy_entrypoint()` async function returning the extension instance
 
@@ -160,19 +163,22 @@ Key standards from that file include:
 3. `RETURN_NAMES` tuple (optional, for named outputs)
 4. `FUNCTION` string naming the execution method
 5. `CATEGORY` string for node categorization
-6. `NODE_CLASS_MAPPINGS` dict in `__init__.py` for registration
-7. `NODE_DISPLAY_NAME_MAPPINGS` dict (optional, for display names)
+6. `SEARCH_ALIASES` list of strings (optional, for search optimization)
+7. `DESCRIPTION` string for node tooltip (optional)
+8. `OUTPUT_TOOLTIPS` tuple of strings matching `RETURN_TYPES` (optional)
+9. `NODE_CLASS_MAPPINGS` dict in `__init__.py` for registration
+10. `NODE_DISPLAY_NAME_MAPPINGS` dict (optional, for display names)
 
 ### Common IO Types
 
 - Primitives: `INT`, `FLOAT`, `STRING`, `BOOLEAN`
-- Media: `IMAGE`, `MASK`, `LATENT`, `AUDIO`
-- Models: `MODEL`, `VAE`, `CLIP`, `CONDITIONING`
-- Special: `COMBO` (dropdown), `*` (any type)
+- Media: `IMAGE`, `MASK`, `LATENT`, `AUDIO`, `VIDEO`, `SVG`, `MESH`, `VOXEL`
+- Models: `MODEL`, `VAE`, `CLIP`, `CONDITIONING`, `CONTROL_NET`, `CLIP_VISION`, `STYLE_MODEL`
+- Special: `COMBO` (dropdown), `*` (any type), `HOOKS`
 
 ## 7. ADVANCED OPERATIONS & CUSTOM MODEL INTEGRATION
 
-When creating custom nodes that interact with model loading, weight processing, or custom tensor operations, you must understand and correctly use the `comfy.ops` module.
+When creating custom nodes that interact with model loading, weight processing, or custom tensor operations, you must understand and correctly use the `comfy.ops` module. ComfyUI uses a decentralized operations system where models are loaded with specific "ops" classes that define how layers (Linear, Conv, etc.) behave, particularly regarding casting and device placement.
 
 ### Reference Files (Read-Only)
 
@@ -193,7 +199,7 @@ ComfyUI provides these operation containers in `comfy.ops`:
 
 ### Required Nested Classes for Custom Operations
 
-Any custom operations class must provide: `Linear`, `Conv1d`, `Conv2d`, `Conv3d`, `GroupNorm`, `LayerNorm`, `ConvTranspose1d`, `ConvTranspose2d`, `Embedding`, and `conv_nd()` method.
+Any custom operations class must provide: `Linear`, `Conv1d`, `Conv2d`, `Conv3d`, `GroupNorm`, `LayerNorm`, `RMSNorm`, `ConvTranspose1d`, `ConvTranspose2d`, `Embedding`, and `conv_nd()` method.
 
 See `custom_node.examples.md` tags:
 - `[TAG:ops:custom-ops-class]` — Full class structure
@@ -215,6 +221,15 @@ See `custom_node.examples.md` tags:
 | `vae_device()` | VAE compute device | Encode/decode |
 | `vae_offload_device()` | VAE storage | VAE patchers |
 | `intermediate_device()` | Intermediate tensors | Temp storage |
+| `soft_empty_cache()` | Release unused VRAM | Post-execution cleanup |
+
+### Capability Checks
+
+| Function | Purpose |
+|----------|---------|
+| `supports_fp8_compute()` | Check for native FP8 support |
+| `supports_nvfp4_compute()` | Check for NVIDIA 4-bit support |
+| `device_supports_non_blocking()` | Check for async transfer support |
 
 See `custom_node.examples.md` tags:
 - `[TAG:device:basic-usage]` — Device management in nodes
@@ -223,9 +238,21 @@ See `custom_node.examples.md` tags:
 
 ## 9. QUANTIZATION OPERATIONS
 
-For custom nodes implementing quantization or working with quantized models, understand `comfy/quant_ops.py`.
+ComfyUI provides a robust framework for quantization via `comfy/quant_ops.py` and the `comfy_kitchen` library (standard in recent versions). This system supports per-tensor and per-block quantization for formats like FP8 (`float8_e4m3fn`, `float8_e5m2`) and NVFP4 (`nvfp4`).
 
-Key classes: `QuantizedTensor`, `QuantizedLayout`, `register_layout_op`
+### Key Components
+
+- `QuantizedTensor` — A `torch.Tensor` subclass that stores quantized data and layout information.
+- `QuantizedLayout` — Base class for defining how tensors are quantized and dequantized.
+- `comfy_kitchen` — The backend library providing optimized CUDA and Triton kernels for quantized operations.
+
+### Supported Formats
+
+| Format | Dtype | Features |
+|--------|-------|----------|
+| `float8_e4m3fn` | `torch.float8_e4m3fn` | Standard FP8, per-tensor scale |
+| `float8_e5m2` | `torch.float8_e5m2` | FP8 with higher dynamic range |
+| `nvfp4` | `torch.uint8` | NVIDIA 4-bit quantization (Blackwell+), per-block scale |
 
 See `custom_node.examples.md` tags:
 - `[TAG:quant:custom-layout]` — Creating custom layouts
@@ -234,7 +261,7 @@ See `custom_node.examples.md` tags:
 
 ## 10. TEXT ENCODER (CLIP) HANDLING
 
-Text encoders convert text prompts into embeddings. Understanding the CLIP pipeline is essential for custom conditioning nodes.
+Text encoders convert text prompts into embeddings. Understanding the CLIP pipeline is essential for custom conditioning nodes. ComfyUI's `CLIP` class in `comfy/sd.py` is the primary interface for custom nodes.
 
 ### Reference Files (Read-Only)
 
@@ -248,6 +275,13 @@ Text encoders convert text prompts into embeddings. Understanding the CLIP pipel
 Text → Tokenize → Encode → Conditioning
 ```
 
+### Encoding with Schedules
+
+When using hooks that change over time (e.g., LoRA strengths), use `clip.encode_from_tokens_scheduled(tokens)`. This method:
+1. Analyzes hook keyframes to determine time ranges (start/end percent).
+2. Performs multiple encodings if strengths change across ranges.
+3. Returns a list of `[tensor, metadata]` entries, where metadata includes `clip_start_percent` and `clip_end_percent`.
+
 See `custom_node.examples.md` tags:
 - `[TAG:clip:basic-encode]` — Using CLIP in nodes
 - `[TAG:clip:conditioning-structure]` — Conditioning format
@@ -255,11 +289,29 @@ See `custom_node.examples.md` tags:
 
 ## 11. CONDITIONING MANIPULATION
 
+Conditioning is a list of entries: `[[embedding_tensor, metadata_dict], ...]`. Manipulation involves copying and updating the `metadata_dict`.
+
 ### Reference Files (Read-Only)
 
 - `nodes.py` — Core conditioning nodes
 - `node_helpers.py` — `conditioning_set_values` utility
 - `comfy/hooks.py` — Hook-based conditioning utilities
+
+### Metadata Keys
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `pooled_output` | `torch.Tensor` | Pooled embedding (e.g., from CLIP-G) |
+| `area` | `tuple` | `(h, w, y, x)` in latent space (pixels/8) |
+| `strength` | `float` | Overall conditioning strength |
+| `mask` | `torch.Tensor` | Attention mask `[B, H, W]` |
+| `mask_strength` | `float` | Strength multiplier for the mask |
+| `set_area_to_bounds`| `bool` | If True, limits conditioning to mask/area bounds |
+| `start_percent` | `float` | Denoising start point (0.0 = high noise) |
+| `end_percent` | `float` | Denoising end point (1.0 = low noise) |
+| `clip_start_percent`| `float` | Specifically for CLIP scheduled segments |
+| `clip_end_percent` | `float` | Specifically for CLIP scheduled segments |
+| `hooks` | `HookGroup` | Associated hooks (LoRAs, etc.) |
 
 See `custom_node.examples.md` tags:
 - `[TAG:cond:set-values]` — Setting conditioning values
@@ -271,7 +323,7 @@ See `custom_node.examples.md` tags:
 
 ### Reference Files (Read-Only)
 
-- `comfy/samplers.py` — Core sampler interfaces and `KSAMPLER` class
+- `comfy/samplers.py` — Core sampler interfaces, `KSAMPLER` object, and `KSampler` wrapper
 - `comfy/k_diffusion/sampling.py` — K-diffusion sampler implementations
 - `comfy_extras/nodes_custom_sampler.py` — Custom sampler node examples
 
@@ -295,6 +347,7 @@ sigmas = torch.cat([sigmas, sigmas.new_zeros([1])])
 See `custom_node.examples.md` tags:
 - `[TAG:scheduler:custom-node]` — Custom scheduler node
 - `[TAG:scheduler:builtin-functions]` — Built-in schedule functions
+- `[TAG:scheduler:handlers]` — Built-in scheduler handlers (simple, karras, etc.)
 
 ## 14. MODEL PATCHING & LoRA
 
@@ -309,19 +362,48 @@ See `custom_node.examples.md` tags:
 new_model = model.clone()
 ```
 
+### Advanced Patching Methods
+
+| Method | Purpose | Usage |
+|--------|---------|-------|
+| `add_patches(patches, strength_patch, strength_model)` | Apply weight patches (LoRA, etc.) | `patcher.add_patches(loaded_lora, 1.0, 1.0)` |
+| `set_model_unet_function_wrapper(wrapper)` | Wrap the entire UNet forward pass | `patcher.set_model_unet_function_wrapper(my_wrapper)` |
+| `add_object_patch(name, obj)` | Replace model components (sampling, etc.) | `patcher.add_object_patch("model_sampling", new_sampling)` |
+| `set_injections(key, injections)` | Inject logic into specific model locations | `patcher.set_injections("my_key", [injection])` |
+| `set_model_options_post_cfg_function(func)` | Inject logic after CFG calculation | `patcher.set_model_options_post_cfg_function(my_func)` |
+
+### Bypass LoRA
+
+For training or offloaded models, use `load_bypass_lora_for_models` which injects LoRA computation into the forward pass instead of patching weights.
+
 See `custom_node.examples.md` tags:
-- `[TAG:lora:load]` — Loading LoRA
+- `[TAG:lora:load]` — Loading LoRA (standard and bypass)
 - `[TAG:patch:transformer]` — Transformer patches
 - `[TAG:patch:cfg]` — CFG function customization
+- `[TAG:patch:object]` — Object patching
 
 ## 15. HOOKS SYSTEM
+
+Hooks allow conditioning to influence sampling (patching weights, modifying transformer options) without core special cases. They can be attached to conditioning and scheduled via keyframes.
 
 ### Reference Files (Read-Only)
 
 - `comfy/hooks.py` — Hook classes and utilities
 - `comfy/model_patcher.py` — Hook integration
 
-Hook types: `WeightHook`, `TransformerOptionsHook`, `AdditionalModelsHook`
+### Hook Types
+
+| Type | Purpose | Usage |
+|------|---------|-------|
+| `WeightHook` | Patch model/clip weights (e.g. LoRA) | `hook.weights = loaded_lora` |
+| `TransformerOptionsHook`| Modify transformer behavior | Wrappers, callbacks, patches |
+| `AdditionalModelsHook` | Load extra models for a segment | `hook.models = [model_patcher]` |
+
+### Scheduling with Keyframes
+
+`HookKeyframeGroup` stores `HookKeyframe` instances.
+- `HookKeyframe(strength, start_percent, guarantee_steps=1)`
+- `guarantee_steps`: Ensures the hook is active for at least N steps once it starts, preventing rapid flickering in high-step counts.
 
 See `custom_node.examples.md` tags:
 - `[TAG:hook:weight]` — Creating WeightHook
@@ -344,6 +426,11 @@ See `custom_node.examples.md` tag `[TAG:controlnet:apply]`
 - `nodes.py` — `VAEDecode`, `VAEEncode`, tiled variants
 - `comfy/sd.py` — VAE loading and configuration
 
+### Compression Ratios
+Different models use different VAE compression ratios. Always use VAE methods to determine the correct scaling:
+- `vae.spacial_compression_decode()` — Returns spatial scale (usually 8, but can be 4 or 32)
+- `vae.temporal_compression_decode()` — Returns temporal scale for video VAEs
+
 See `custom_node.examples.md` tags:
 - `[TAG:vae:decode-encode]` — Basic VAE operations
 - `[TAG:vae:tiled]` — Tiled VAE for large images
@@ -354,20 +441,28 @@ See `custom_node.examples.md` tags:
 
 ```python
 latent = {
-    "samples": torch.Tensor,  # Shape: [B, 4, H//8, W//8]
-    "noise_mask": torch.Tensor,  # Optional
+    "samples": torch.Tensor,       # Shape: [B, C, (T), H, W]
+    "noise_mask": torch.Tensor,    # Optional: [B, 1, (T), H, W]
+    "batch_index": list[int],      # Optional: indices for batched operations
+    "downscale_ratio_spacial": 8,  # Optional: metadata for scaling
 }
 ```
 
-**CRITICAL:** Latent dimensions are pixel dimensions / 8:
+**CRITICAL:** Latent dimensions are pixel dimensions / scale:
 ```python
-latent_height = pixel_height // 8
+scale = vae.spacial_compression_decode()
+latent_height = pixel_height // scale
 ```
+
+### Latent Operations (io.LatentOperation)
+V3 nodes can use the `io.LatentOperation` type to create modular latent effects (sharpen, tonemap). These return a function:
+`def operation(latent: torch.Tensor, **kwargs) -> torch.Tensor`.
 
 See `custom_node.examples.md` tags:
 - `[TAG:latent:format]` — Latent dict structure
 - `[TAG:latent:empty]` — Creating empty latents
 - `[TAG:latent:upscale]` — Latent upscaling
+- `[TAG:latent:operation]` — io.LatentOperation pattern
 
 ## 19. IMAGE PROCESSING
 
@@ -391,8 +486,9 @@ See `custom_node.examples.md` tags:
 1. **Never hardcode devices** — Use `comfy.model_management.get_torch_device()`
 2. **Image tensor format** — ComfyUI uses `B,H,W,C`, use `.movedim(-1, 1)` to convert
 3. **Clone before modify** — Always clone ModelPatchers and dicts
-4. **Latent space scaling** — Latent dimensions are pixels / 8
+4. **Latent space scaling** — Latent dimensions are pixels / scale (usually 8)
 5. **Sigma schedules** — Always append 0.0 at the end
+6. **Nested Tensors** — Some latents may be nested; check `latent.is_nested` and `unbind()` if necessary.
 
 ### Common Type Shapes
 
@@ -400,7 +496,7 @@ See `custom_node.examples.md` tags:
 |------|-------|-------------|
 | `IMAGE` | `[B, H, W, C]` | 0.0 - 1.0 |
 | `MASK` | `[B, H, W]` or `[H, W]` | 0.0 - 1.0 |
-| `LATENT` | `{"samples": [B, 4, H/8, W/8]}` | ~-4.0 to 4.0 |
+| `LATENT` | `{"samples": [B, C, (T), H, W]}` | ~-4.0 to 4.0 |
 | `CONDITIONING` | `[[tensor, dict], ...]` | - |
 | `SIGMAS` | `[steps + 1]` | σ_max to 0.0 |
 

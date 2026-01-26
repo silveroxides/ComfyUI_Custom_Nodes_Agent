@@ -50,8 +50,10 @@ class MyNode(io.ComfyNode):
             category="custom/category",
             inputs=[...],
             outputs=[...],
+            search_aliases=["alias1", "alias2"],
+            description="My Node Description",
         )
-    
+
     @classmethod
     def execute(cls, **kwargs) -> io.NodeOutput:
         ...
@@ -81,7 +83,7 @@ class MyNode(io.ComfyNode):
                 io.Model.Input("model"),
                 io.Image.Input("image"),
                 io.Int.Input("steps", default=20, min=1, max=100),
-                io.Float.Input("strength", default=1.0),
+                io.Float.Input("strength", default=1.0, advanced=True),
                 io.String.Input("text", multiline=True),
                 io.Combo.Input("mode", options=["option1", "option2"]),
                 io.Boolean.Input("enabled", default=True),
@@ -90,10 +92,15 @@ class MyNode(io.ComfyNode):
                 io.Image.Output(),
                 io.Latent.Output(display_name="latent_out"),
             ],
+            search_aliases=["UniqueNodeID", "MyNode"],
+            description="My Node Description",
         )
-    
+
     @classmethod
-    def execute(cls, model, image, steps, strength, text, mode, enabled) -> io.NodeOutput:
+    def execute(cls, **kwargs) -> io.NodeOutput:
+        # Access inputs via kwargs
+        model = kwargs.get("model")
+        image = kwargs.get("image")
         # Process...
         return io.NodeOutput(result_image, result_latent)
 
@@ -125,12 +132,15 @@ class MyNode:
                 "mask": ("MASK",),
             }
         }
-    
+
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("output_image",)
+    OUTPUT_TOOLTIPS = ("The processed image.",)
     FUNCTION = "process"
     CATEGORY = "custom/category"
-    
+    DESCRIPTION = "My Custom Node Description"
+    SEARCH_ALIASES = ["alias1", "alias2"]
+
     def process(self, image, strength, mask=None):
         # Process...
         return (result,)
@@ -169,10 +179,11 @@ class MyCustomOps:
     class Conv3d(torch.nn.Conv3d, CastWeightBiasOp): ...
     class GroupNorm(torch.nn.GroupNorm, CastWeightBiasOp): ...
     class LayerNorm(torch.nn.LayerNorm, CastWeightBiasOp): ...
+    class RMSNorm(comfy.rmsnorm.RMSNorm, CastWeightBiasOp): ...
     class ConvTranspose1d(torch.nn.ConvTranspose1d, CastWeightBiasOp): ...
     class ConvTranspose2d(torch.nn.ConvTranspose2d, CastWeightBiasOp): ...
     class Embedding(torch.nn.Embedding, CastWeightBiasOp): ...
-    
+
     @classmethod
     def conv_nd(cls, dims, *args, **kwargs):
         if dims == 2:
@@ -194,10 +205,10 @@ class MyCustomOps(comfy.ops.manual_cast):
             weight, bias, offload_stream = comfy.ops.cast_bias_weight(
                 self, input, offloadable=True
             )
-            
+
             # Your custom logic here
             result = torch.nn.functional.linear(input, weight, bias)
-            
+
             # Clean up (important for memory management)
             comfy.ops.uncast_bias_weight(self, weight, bias, offload_stream)
             return result
@@ -212,21 +223,21 @@ import comfy.ops
 class MyCustomOps(comfy.ops.disable_weight_init):
     class Linear(comfy.ops.disable_weight_init.Linear):
         comfy_cast_weights = True  # Enable casting
-        
+
         def reset_parameters(self):
             # Custom initialization (called when layer is created)
             self.my_custom_scale = None
             return None  # Skip default init
-        
+
         def forward_comfy_cast_weights(self, input):
             weight, bias, offload_stream = comfy.ops.cast_bias_weight(
                 self, input, offloadable=True
             )
-            
+
             # Apply custom scaling
             if self.my_custom_scale is not None:
                 weight = weight * self.my_custom_scale
-            
+
             result = torch.nn.functional.linear(input, weight, bias)
             comfy.ops.uncast_bias_weight(self, weight, bias, offload_stream)
             return result
@@ -273,16 +284,16 @@ class LoadModelWithCustomOps:
                 "use_custom_ops": ("BOOLEAN", {"default": True}),
             }
         }
-    
+
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "load_model"
     CATEGORY = "custom/loaders"
-    
+
     def load_model(self, model_path, use_custom_ops):
         model_options = {}
         if use_custom_ops:
             model_options["custom_operations"] = comfy.ops.manual_cast
-        
+
         model = comfy.sd.load_diffusion_model(
             model_path,
             model_options=model_options
@@ -305,13 +316,13 @@ class MyModelNode:
         # Get appropriate devices
         device = comfy.model_management.get_torch_device()
         offload_device = comfy.model_management.unet_offload_device()
-        
+
         # Move tensor to compute device
         image = image.to(device)
-        
+
         # Process...
         result = model(image)
-        
+
         # Move result to intermediate device if needed
         return result.to(comfy.model_management.intermediate_device())
 ```
@@ -400,6 +411,7 @@ if comfy.model_management.device_supports_non_blocking(device):
     pass
 ```
 
+
 ---
 
 ## Quantization
@@ -412,14 +424,14 @@ from comfy.quant_ops import QuantizedTensor
 
 class QuantizedTensor(torch.Tensor):
     _qdata: torch.Tensor      # Quantized data storage
-    _layout_type: str         # Layout identifier (e.g., "TensorCoreFP8Layout")
-    _layout_params: dict      # Scale, orig_dtype, etc.
-    
+    _layout_type: str         # Layout identifier (e.g., "TensorCoreFP8Layout", "TensorCoreNVFP4Layout")
+    _layout_params: dict      # Scale, block_scale (for NVFP4), orig_dtype, etc.
+
     @classmethod
     def from_float(cls, tensor, layout_type, **kwargs):
         """Create quantized tensor from float tensor."""
         pass
-    
+
     def dequantize(self):
         """Convert back to original dtype."""
         pass
@@ -434,30 +446,30 @@ import torch
 
 class MyCustomLayout(QuantizedLayout):
     """Custom quantization layout for specific use case."""
-    
+
     @classmethod
     def quantize(cls, tensor, scale=None, dtype=torch.float8_e4m3fn, **kwargs):
         """
         Quantize a float tensor.
-        
+
         Args:
             tensor: Input float tensor
             scale: Quantization scale (computed if None)
             dtype: Target quantized dtype
-            
+
         Returns:
             Tuple of (quantized_data, layout_params_dict)
         """
         if scale is None:
             scale = tensor.abs().max() / torch.finfo(dtype).max
-        
+
         qdata = (tensor / scale).to(dtype)
         layout_params = {
             "scale": scale,
             "orig_dtype": tensor.dtype,
         }
         return qdata, layout_params
-    
+
     @staticmethod
     def dequantize(qdata, scale, orig_dtype, **kwargs):
         """Dequantize back to original dtype."""
@@ -469,18 +481,18 @@ class MyCustomLayout(QuantizedLayout):
 def my_custom_linear(func, args, kwargs):
     """
     Custom linear operation for MyCustomLayout tensors.
-    
+
     Args:
         func: Original torch function
         args: Positional arguments (input, weight, bias)
         kwargs: Keyword arguments
     """
     input_tensor, weight, bias = args[0], args[1], args[2] if len(args) > 2 else None
-    
+
     # Dequantize weight if needed
     if isinstance(weight, QuantizedTensor):
         weight = weight.dequantize()
-    
+
     # Perform operation
     return torch.nn.functional.linear(input_tensor, weight, bias)
 ```
@@ -500,7 +512,8 @@ quant_config = {
 CustomQuantOps = mixed_precision_ops(
     quant_config=quant_config,
     compute_dtype=torch.bfloat16,
-    full_precision_mm=False
+    full_precision_mm=False,
+    disabled=[] # Optional: list of formats to disable (e.g., ["nvfp4"])
 )
 
 # Use in model loading
@@ -522,35 +535,36 @@ class QuantizeModelWeights:
         return {
             "required": {
                 "model": ("MODEL",),
-                "quantize_dtype": (["fp8_e4m3fn", "fp8_e5m2", "int8"],),
+                "quantize_dtype": (["fp8_e4m3fn", "fp8_e5m2", "nvfp4", "int8"],),
             }
         }
-    
+
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "quantize"
     CATEGORY = "custom/quantization"
-    
+
     def quantize(self, model, quantize_dtype):
         dtype_map = {
             "fp8_e4m3fn": torch.float8_e4m3fn,
             "fp8_e5m2": torch.float8_e5m2,
+            "nvfp4": torch.uint8, # NVFP4 stored as uint8
             "int8": torch.int8,
         }
         target_dtype = dtype_map[quantize_dtype]
-        
+
         # Clone model to avoid modifying original
         model = model.clone()
-        
+
         # Apply quantization via model patcher
         def quantize_weight(weight, **kwargs):
             if weight.dtype in [torch.float16, torch.float32, torch.bfloat16]:
                 scale = weight.abs().max() / torch.finfo(target_dtype).max
                 return (weight / scale).to(target_dtype), {"scale": scale}
             return weight, {}
-        
+
         # Add weight hook
         model.add_weight_hook(quantize_weight)
-        
+
         return (model,)
 ```
 
@@ -586,21 +600,23 @@ class MyTextEncoder:
                 "clip": ("CLIP",),
             }
         }
-    
+
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "encode"
     CATEGORY = "conditioning"
-    
+
     def encode(self, clip, text):
         # Validate CLIP input
         if clip is None:
             raise RuntimeError("clip input is invalid: None")
-        
+
         # Tokenize text (handles prompt weights like (word:1.2))
         tokens = clip.tokenize(text)
-        
+
         # Encode and return conditioning
-        # encode_from_tokens_scheduled handles hook schedules
+        # encode_from_tokens_scheduled handles hook schedules.
+        # It returns a list of [embedding_tensor, metadata_dict] entries.
+        # If hooks are scheduled, it produces entries with clip_start_percent/clip_end_percent.
         return (clip.encode_from_tokens_scheduled(tokens), )
 ```
 
@@ -639,11 +655,15 @@ conditioning = [
         {
             "pooled_output": torch.Tensor(...),  # Shape: [1, pooled_dim]
             # Optional metadata:
-            "area": (height, width, y, x),  # Pixels / 8
+            "area": (h_latent, w_latent, y_latent, x_latent),  # Pixels / 8
             "strength": 1.0,
-            "mask": torch.Tensor(...),
-            "start_percent": 0.0,
-            "end_percent": 1.0,
+            "mask": torch.Tensor(...),          # [B, H_latent, W_latent]
+            "mask_strength": 1.0,
+            "set_area_to_bounds": False,
+            "start_percent": 0.0,               # Sampling start (0.0=start)
+            "end_percent": 1.0,                 # Sampling end (1.0=end)
+            "clip_start_percent": 0.0,          # Specifically for scheduled CLIP
+            "clip_end_percent": 1.0,            # Specifically for scheduled CLIP
             "hooks": HookGroup(...),
         }
     ]
@@ -689,13 +709,13 @@ class ConditioningSetStrength:
                 "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0}),
             }
         }
-    
+
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "set_strength"
-    
+
     def set_strength(self, conditioning, strength):
         c = node_helpers.conditioning_set_values(
-            conditioning, 
+            conditioning,
             {"strength": strength}
         )
         return (c,)
@@ -722,7 +742,7 @@ def set_mask(conditioning, mask, strength, set_cond_area="default"):
     set_area_to_bounds = (set_cond_area != "default")
     if len(mask.shape) < 3:
         mask = mask.unsqueeze(0)
-    
+
     return node_helpers.conditioning_set_values(conditioning, {
         "mask": mask,
         "set_area_to_bounds": set_area_to_bounds,
@@ -759,22 +779,22 @@ def sample_my_sampler(model, x, sigmas, extra_args=None, callback=None, disable=
     """Custom sampler implementation."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
-    
+
     for i in range(len(sigmas) - 1):
         # Get model prediction (denoised image estimate)
         denoised = model(x, sigmas[i] * s_in, **extra_args)
-        
+
         # Calculate derivative
         d = to_d(x, sigmas[i], denoised)
-        
+
         # Euler step
         dt = sigmas[i + 1] - sigmas[i]
         x = x + d * dt
-        
+
         # Callback for preview
         if callback is not None:
             callback({'i': i, 'denoised': denoised, 'x': x})
-    
+
     return x
 ```
 
@@ -792,11 +812,11 @@ class MySamplerNode:
                 "my_param": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0}),
             }
         }
-    
+
     RETURN_TYPES = ("SAMPLER",)
     FUNCTION = "get_sampler"
     CATEGORY = "sampling/custom_sampling/samplers"
-    
+
     def get_sampler(self, my_param):
         # Create KSAMPLER with custom function and options
         sampler = comfy.samplers.KSAMPLER(
@@ -824,10 +844,14 @@ Available sampler names:
 
 ```python
 comfy.samplers.KSAMPLER_NAMES = [
-    "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp",
-    "heun", "heunpp2", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast",
-    "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_2m",
-    "dpmpp_2m_sde", "dpmpp_3m_sde", "ddpm", "lcm", ...
+    "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2",
+    "exp_heun_2_x0", "exp_heun_2_x0_sde", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast",
+    "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_2s_ancestral_cfg_pp", "dpmpp_sde", "dpmpp_sde_gpu",
+    "dpmpp_2m", "dpmpp_2m_cfg_pp", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu", "dpmpp_2m_sde_heun",
+    "dpmpp_2m_sde_heun_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddpm", "lcm", "ipndm", "ipndm_v",
+    "deis", "res_multistep", "res_multistep_cfg_pp", "res_multistep_ancestral",
+    "res_multistep_ancestral_cfg_pp", "gradient_estimation", "gradient_estimation_cfg_pp",
+    "er_sde", "seeds_2", "seeds_3", "sa_solver", "sa_solver_pece"
 ]
 ```
 
@@ -850,12 +874,14 @@ Built-in scheduler handlers:
 ```python
 comfy.samplers.SCHEDULER_HANDLERS = {
     "simple": simple_scheduler,
-    "normal": normal_scheduler,
-    "karras": get_sigmas_karras,
-    "exponential": get_sigmas_exponential,
+    "sgm_uniform": partial(normal_scheduler, sgm=True),
+    "karras": k_diffusion_sampling.get_sigmas_karras,
+    "exponential": k_diffusion_sampling.get_sigmas_exponential,
     "ddim_uniform": ddim_scheduler,
     "beta": beta_scheduler,
-    ...
+    "normal": normal_scheduler,
+    "linear_quadratic": linear_quadratic_schedule,
+    "kl_optimal": kl_optimal_scheduler,
 }
 ```
 
@@ -877,20 +903,20 @@ class MyScheduler:
                 "my_param": ("FLOAT", {"default": 1.0}),
             }
         }
-    
+
     RETURN_TYPES = ("SIGMAS",)
     FUNCTION = "get_sigmas"
     CATEGORY = "sampling/custom_sampling/schedulers"
-    
+
     def get_sigmas(self, model, steps, my_param):
         # Get model's sigma range
         model_sampling = model.get_model_object("model_sampling")
         sigma_min = float(model_sampling.sigma_min)
         sigma_max = float(model_sampling.sigma_max)
-        
+
         # Generate custom sigma schedule
         sigmas = my_custom_schedule(steps, sigma_min, sigma_max, my_param)
-        
+
         # Always append zero at the end
         sigmas = torch.cat([sigmas, sigmas.new_zeros([1])])
         return (sigmas,)
@@ -925,42 +951,52 @@ sigmas = k_diffusion_sampling.get_sigmas_exponential(
 ## Model Patching & LoRA
 
 ### [TAG:lora:load]
-Loading LoRA for models:
+Loading LoRA for models (Standard and Bypass):
 
 ```python
 import comfy.lora
 import comfy.sd
 
 class MyLoRALoader:
-    def load_lora(self, model, clip, lora_path, strength_model, strength_clip):
+    def load_lora(self, model, clip, lora_path, strength_model, strength_clip, bypass_mode=False):
         # Load LoRA weights
         lora = comfy.utils.load_torch_file(lora_path)
-        
-        # Use the standard loading function
-        model_lora, clip_lora = comfy.sd.load_lora_for_models(
-            model, clip, lora, strength_model, strength_clip
-        )
+
+        if bypass_mode:
+            # Bypass mode injects LoRA into forward pass (output = base + lora)
+            # Useful for training or when models are offloaded
+            model_lora, clip_lora = comfy.sd.load_bypass_lora_for_models(
+                model, clip, lora, strength_model, strength_clip
+            )
+        else:
+            # Standard mode patches the weights directly
+            model_lora, clip_lora = comfy.sd.load_lora_for_models(
+                model, clip, lora, strength_model, strength_clip
+            )
         return (model_lora, clip_lora)
 ```
 
 ### [TAG:lora:direct-patch]
-Direct patch addition:
+Direct patch addition with strengths:
 
 ```python
 # Clone the model patcher (don't modify original)
 new_model = model.clone()
 
 # Add patches with strength
-patches = {...}  # Dict of key -> patch_data
+# patches: Dict[str, tuple] or Dict[str, WeightAdapterBase]
+# strength_patch: multiper for the patch itself (e.g. LoRA strength)
+# strength_model: multiplier for the base model weight before patching
+patches = {...}
 applied_keys = new_model.add_patches(
-    patches, 
-    strength_patch=1.0,   # LoRA strength
-    strength_model=1.0    # Model strength (for merging)
+    patches,
+    strength_patch=1.0,
+    strength_model=1.0
 )
 ```
 
 ### [TAG:patch:object]
-Object patches:
+Object patches for replacing core components:
 
 ```python
 # Add object patch (affects model.get_model_object())
@@ -968,45 +1004,69 @@ model.add_object_patch("manual_cast_dtype", torch.float16)
 
 # Set custom operations
 model.add_object_patch("custom_operations", my_ops_class)
+
+# Replace model sampling logic
+model.add_object_patch("model_sampling", MyNewSampling(model.model.model_config))
 ```
 
 ### [TAG:patch:transformer]
-Transformer options patches:
+Transformer options patches and forward wrappers:
 
 ```python
 # Add attention patches
 model.set_model_attn1_patch(my_self_attn_patch)
 model.set_model_attn2_patch(my_cross_attn_patch)
 
+# Wrap the entire UNet forward pass
+# Signature: wrapper(model_function, params)
+model.set_model_unet_function_wrapper(my_unet_wrapper)
+
 # Add block patches
 model.set_model_input_block_patch(my_input_patch)
 model.set_model_output_block_patch(my_output_patch)
 
-# Replace attention entirely
-model.set_model_attn1_replace(my_attn_func, "input", block_number)
+# Replace attention entirely for specific blocks
+model.set_model_attn1_replace(my_attn_func, "input", block_number, transformer_index=None)
 ```
 
 ### [TAG:patch:cfg]
-CFG function customization:
+CFG and Post-CFG function customization:
 
 ```python
-# Custom CFG function
+# Custom CFG function (replaces entire CFG logic)
 def my_cfg_function(args):
     cond = args["cond"]
     uncond = args["uncond"]
     cond_scale = args["cond_scale"]
-    # Custom CFG logic here
+    # ... logic ...
     return uncond + (cond - uncond) * cond_scale
 
 model.set_model_sampler_cfg_function(my_cfg_function)
 
-# Post-CFG modification
+# Pre-CFG and Post-CFG modifications (additive)
+def pre_cfg(args):
+    # Modify cond/uncond before CFG
+    return args
+
 def post_cfg(args):
     denoised = args["denoised"]
-    # Modify denoised result
+    # Modify denoised result after CFG
     return denoised
 
+model.set_model_sampler_pre_cfg_function(pre_cfg)
 model.set_model_sampler_post_cfg_function(post_cfg)
+```
+
+### [TAG:patch:injections]
+Low-level model injections:
+
+```python
+# Injections are used to wrap or modify specific model layers
+# Often used by Bypass LoRA or advanced extension nodes
+from comfy.patcher_extension import PatcherInjection
+
+injections = [PatcherInjection(target_key, wrapper_func)]
+model.set_injections("my_extension_id", injections)
 ```
 
 ---
@@ -1021,14 +1081,14 @@ import comfy.hooks
 
 def create_lora_hook(lora_weights, strength_model, strength_clip):
     hook_group = comfy.hooks.HookGroup()
-    
+
     hook = comfy.hooks.WeightHook(
         strength_model=strength_model,
         strength_clip=strength_clip
     )
     hook.weights = lora_weights
     hook_group.add(hook)
-    
+
     return hook_group
 ```
 
@@ -1054,13 +1114,39 @@ Hook keyframes (scheduling):
 hook_kf = comfy.hooks.HookKeyframeGroup()
 
 # Full strength for first 50% of sampling
-hook_kf.add(comfy.hooks.HookKeyframe(strength=1.0, start_percent=0.0))
+# guarantee_steps=1 ensures it runs for at least 1 step even if next KF starts immediately
+hook_kf.add(comfy.hooks.HookKeyframe(strength=1.0, start_percent=0.0, guarantee_steps=1))
 
 # Fade out from 50% to 100%
 hook_kf.add(comfy.hooks.HookKeyframe(strength=0.0, start_percent=0.5))
 
 # Apply to hooks
 hooks.set_keyframes_on_hooks(hook_kf)
+```
+
+### [TAG:hook:transformer-options]
+Creating a TransformerOptionsHook for attention manipulation:
+
+```python
+import comfy.hooks
+
+def create_attn_hook(self_attn_patch, cross_attn_patch):
+    # Dictionary structure matching ModelPatcher.transformer_options
+    transformers_dict = {
+        "patches": {
+            "self_attn": [self_attn_patch],
+            "cross_attn": [cross_attn_patch],
+        }
+    }
+
+    hook = comfy.hooks.TransformerOptionsHook(
+        transformers_dict=transformers_dict,
+        hook_scope=comfy.hooks.EnumHookScope.HookedOnly
+    )
+
+    hook_group = comfy.hooks.HookGroup()
+    hook_group.add(hook)
+    return hook_group
 ```
 
 ---
@@ -1082,20 +1168,20 @@ class ApplyControlNet:
                 "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0}),
             }
         }
-    
+
     RETURN_TYPES = ("CONDITIONING",)
-    
+
     def apply(self, conditioning, control_net, image, strength):
         if strength == 0:
             return (conditioning,)
-        
+
         # Clone controlnet
         c_net = control_net.copy()
-        
+
         # Set control hint (image) and strength
         # Image must be in B,H,W,C format, convert to B,C,H,W
         c_net.set_cond_hint(image.movedim(-1, 1), strength)
-        
+
         # Add to conditioning
         out = []
         for t in conditioning:
@@ -1107,7 +1193,7 @@ class ApplyControlNet:
                 c.set_previous_controlnet(prev_cnet)
             n[1]['control'] = c
             out.append(n)
-        
+
         return (out,)
 ```
 
@@ -1122,30 +1208,35 @@ Basic VAE operations:
 class VAEDecode:
     def decode(self, vae, samples):
         # samples is {"samples": latent_tensor}
+        # VAE.decode handles is_nested and returns B,H,W,C
         images = vae.decode(samples["samples"])
-        # Returns IMAGE tensor in B,H,W,C format (0-1 range)
         return (images,)
 
 class VAEEncode:
     def encode(self, vae, pixels):
         # pixels is IMAGE tensor in B,H,W,C format
-        # Only use RGB channels
-        latent = vae.encode(pixels[:, :, :, :3])
+        # Returns dict with "samples"
+        latent = vae.encode(pixels)
         return ({"samples": latent},)
 ```
 
 ### [TAG:vae:tiled]
-Tiled VAE for large images:
+Tiled VAE for large images and video:
 
 ```python
 class VAEDecodeTiled:
-    def decode(self, vae, samples, tile_size=512, overlap=64):
+    def decode(self, vae, samples, tile_size=512, overlap=64, temporal_size=64, temporal_overlap=8):
         compression = vae.spacial_compression_decode()
+        # temporal_compression_decode returns None if not video VAE
+        temporal_compression = vae.temporal_compression_decode()
+
         images = vae.decode_tiled(
             samples["samples"],
             tile_x=tile_size // compression,
             tile_y=tile_size // compression,
-            overlap=overlap // compression
+            overlap=overlap // compression,
+            tile_t=temporal_size // (temporal_compression or 1) if temporal_compression else None,
+            overlap_t=temporal_overlap // (temporal_compression or 1) if temporal_compression else None
         )
         return (images,)
 ```
@@ -1174,10 +1265,47 @@ Latent tensor format:
 ```python
 # Latent dict structure
 latent = {
-    "samples": torch.Tensor,  # Shape: [B, C, H, W] - typically [B, 4, H//8, W//8]
-    "noise_mask": torch.Tensor,  # Optional: [B, 1, H, W] or [1, H, W]
-    "batch_index": list,  # Optional: indices for batched operations
+    "samples": torch.Tensor,  # Shape: [B, C, (T), H, W]
+    "noise_mask": torch.Tensor,  # Optional: [B, 1, (T), H, W]
+    "batch_index": list[int],  # Optional: indices for batched operations
+    "downscale_ratio_spacial": 8, # Optional: metadata for scaling
 }
+```
+
+### [TAG:latent:operation]
+Using `io.LatentOperation` for modular transformations:
+
+```python
+class LatentOperationSharpen(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="LatentSharpen",
+            inputs=[io.Float.Input("alpha", default=0.1)],
+            outputs=[io.LatentOperation.Output()],
+        )
+
+    @classmethod
+    def execute(cls, alpha) -> io.NodeOutput:
+        def sharpen(latent: torch.Tensor, **kwargs) -> torch.Tensor:
+            # Process latent...
+            return processed_latent
+        return io.NodeOutput(sharpen)
+
+class LatentApplyOperation(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="LatentApplyOp",
+            inputs=[io.Latent.Input("samples"), io.LatentOperation.Input("operation")],
+            outputs=[io.Latent.Output()],
+        )
+
+    @classmethod
+    def execute(cls, samples, operation) -> io.NodeOutput:
+        s = samples.copy()
+        s["samples"] = operation(latent=s["samples"])
+        return io.NodeOutput(s)
 ```
 
 ### [TAG:latent:empty]
@@ -1188,7 +1316,7 @@ class EmptyLatentImage:
     def __init__(self):
         # Use intermediate device for latents
         self.device = comfy.model_management.intermediate_device()
-    
+
     def generate(self, width, height, batch_size=1):
         # SD uses 4 channels, dimensions / 8
         latent = torch.zeros(
@@ -1206,7 +1334,7 @@ import comfy.utils
 
 class LatentUpscale:
     upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "bislerp"]
-    
+
     def upscale(self, samples, upscale_method, width, height):
         s = samples.copy()
         # Upscale in latent space (/ 8)
@@ -1229,10 +1357,10 @@ def composite_latents(samples_to, samples_from, x, y, feather=0):
     x = x // 8
     y = y // 8
     feather = feather // 8
-    
+
     s = samples_to["samples"].clone()
     s_from = samples_from["samples"]
-    
+
     # Simple paste (no feather)
     if feather == 0:
         s[:, :, y:y+s_from.shape[2], x:x+s_from.shape[3]] = s_from
@@ -1240,7 +1368,7 @@ def composite_latents(samples_to, samples_from, x, y, feather=0):
         # Apply feathered blending
         # ... feather mask calculation
         pass
-    
+
     return {"samples": s}
 ```
 
@@ -1275,11 +1403,11 @@ class LoadImage:
         # Load with PIL
         img = Image.open(image_path)
         img = img.convert("RGB")
-        
+
         # Convert to tensor: [H, W, C] -> [1, H, W, C], normalized to 0-1
         img_tensor = torch.from_numpy(np.array(img).astype(np.float32) / 255.0)
         img_tensor = img_tensor.unsqueeze(0)  # Add batch dimension
-        
+
         return (img_tensor,)
 ```
 
@@ -1292,10 +1420,10 @@ import comfy.utils
 def upscale_image(image, width, height, method="bilinear"):
     # Convert B,H,W,C -> B,C,H,W for processing
     samples = image.movedim(-1, 1)
-    
+
     # Upscale
     samples = comfy.utils.common_upscale(samples, width, height, method, "disabled")
-    
+
     # Convert back to B,H,W,C
     return samples.movedim(1, -1)
 ```
@@ -1307,13 +1435,13 @@ Batch handling:
 def process_batch(images):
     # images shape: [B, H, W, C]
     batch_size = images.shape[0]
-    
+
     results = []
     for i in range(batch_size):
         single = images[i:i+1]  # Keep batch dimension
         processed = process_single(single)
         results.append(processed)
-    
+
     return torch.cat(results, dim=0)
 ```
 
@@ -1352,7 +1480,7 @@ Common type shapes:
 |------|-------|-------------|
 | `IMAGE` | `[B, H, W, C]` | 0.0 - 1.0 |
 | `MASK` | `[B, H, W]` or `[H, W]` | 0.0 - 1.0 |
-| `LATENT` | `{"samples": [B, 4, H/8, W/8]}` | ~-4.0 to 4.0 |
+| `LATENT` | `{"samples": [B, C, (T), H, W]}` | ~-4.0 to 4.0 |
 | `CONDITIONING` | `[[tensor, dict], ...]` | - |
 | `SIGMAS` | `[steps + 1]` | σ_max to 0.0 |
 
@@ -1381,14 +1509,14 @@ class MyNode:
         # Validate inputs
         if model is None:
             raise RuntimeError("Model input is None")
-        
+
         if image.shape[0] == 0:
             raise ValueError("Empty image batch")
-        
+
         # Check compatibility
         if image.shape[-1] not in [3, 4]:
             raise ValueError(f"Expected RGB or RGBA image, got {image.shape[-1]} channels")
-        
+
         # ... process
 ```
 
